@@ -1,0 +1,96 @@
+{% extends "tracker/index.html" %}
+{% load donation_tags %}
+{% load i18n %}
+{% load url from future %}
+{% load tz %}
+
+{% block title %}{% trans "Graphs" %} -- {{ event.name|title }}{% endblock %}
+
+{% block head %}
+	{{ block.super }}
+	<script src="{{ STATIC_URL }}d3.min.js"></script>
+	<script src="{{ STATIC_URL }}numeral.min.js"></script>
+	<script src="{{ STATIC_URL }}jquery.smartresize.js"></script>
+	<script>
+var SOURCE = "{% url 'graphdata' event=event.id %}";
+	</script>
+	<script src="{{ STATIC_URL }}graph.js"></script>
+	<link rel="stylesheet" type="text/css" href="{{ STATIC_URL }}graph.css"/ >
+{% endblock %}
+
+{% block content %}
+
+<h2 class="text-center">{{ event.name }} graphs
+<br>
+<small>
+Donation Total:
+<span id="donations_amount" class='animated-numbers' data-num-value="0">$0.00</span> (<span id="donations_count" class='animated-numbers' data-num-value="0">0</span>) —
+Max/Avg Donation:
+<span id='donations_max' class='animated-numbers' data-num-value="0">$0.00</span>/<span id='donations_avg' class='animated-numbers' data-num-value="0">$0.00</span>
+
+</small>
+</h2>
+
+
+<div class="row">
+
+	<div class="col-xs-12">
+		<h3 class='text-center'>Overall donations</h3>
+		<svg class="chart type2" id="running_total">
+			<g class='loading' opacity='0'>
+				<circle cx="50" cy="50" r="30" stroke-dasharray="163.36281798666926 87.9645943005142" stroke="#00AEEF" fill="none" stroke-width="3">
+					<animateTransform attributeName="transform" type="rotate" values="0 50 50;180 50 50;360 50 50;" keyTimes="0;0.5;1" dur="3s" repeatCount="indefinite" begin="0s">
+					</animateTransform>
+				</circle>
+			</g>
+		</svg>
+	</div>
+
+	<div class="col-xs-12">
+		<h3 class='text-center'>Last 24 hours</h3>
+	</div>
+
+	<div class="col-xs-12 col-md-6">
+		<svg class="chart" id="bar_hourly_count">
+			<g class='loading' opacity='0'>
+				<circle cx="50" cy="50" r="30" stroke-dasharray="163.36281798666926 87.9645943005142" stroke="#00AEEF" fill="none" stroke-width="3">
+					<animateTransform attributeName="transform" type="rotate" values="0 50 50;180 50 50;360 50 50;" keyTimes="0;0.5;1" dur="3s" repeatCount="indefinite" begin="0s">
+					</animateTransform>
+				</circle>
+			</g>
+		</svg>
+	</div>
+
+	<div class="text-center center">
+		<a class="btn btn-success" id="refresh_graph">?</a>
+		<a class="btn btn-warning" id="replay_graph">Replay</a>
+		<a class='btn btn-primary' id='replay_start'>Start</a>
+		<a class="btn btn-primary" id="replay_moment_0">1/4th</a>
+		<a class="btn btn-primary" id="replay_moment_1">1/2th</a>
+		<a class="btn btn-primary" id="replay_moment_2">3/4th</a>
+		<div>
+			Reference moment: <span id='reference_moment'>?</span>
+		</div>
+	</div>
+
+	<div class='col-xs-12'>
+		<h3 class='text-center'>Boring graphs</h3>
+	</div>
+
+	<div class="col-xs-12 col-md-6">
+		Distribution of donation sizes, last 24h:
+		<svg class="chart" id="bardist">
+			<g class='loading'>
+				<circle cx="50" cy="50" r="30" stroke-dasharray="163.36281798666926 87.9645943005142" stroke="#00AEEF" fill="none" stroke-width="3">
+					<animateTransform attributeName="transform" type="rotate" values="0 50 50;180 50 50;360 50 50;" keyTimes="0;0.5;1" dur="3s" repeatCount="indefinite" begin="0s">
+					</animateTransform>
+				</circle>
+			</g>
+		</svg>
+	</div>
+
+</div>
+
+
+	{% include "tracker/navfooter.html" %}
+{% endblock %}

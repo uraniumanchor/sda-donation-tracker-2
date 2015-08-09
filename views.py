@@ -5,7 +5,7 @@ from django import shortcuts
 from django.shortcuts import render,render_to_response, redirect
 
 from django.db import connection
-from django.db.models import Count,Sum,Max,Avg,Q
+from django.db.models import Count,Sum,Min,Max,Avg,Q
 from django.db.utils import ConnectionDoesNotExist,IntegrityError
 from django.db import transaction
 
@@ -32,11 +32,13 @@ from django.template.base import TemplateSyntaxError
 from django.views.decorators.cache import never_cache,cache_page
 from django.views.decorators.csrf import csrf_protect,csrf_exempt,get_token as get_csrf_token
 from django.views.decorators.http import require_POST
+from django.views.generic import View, TemplateView
 
 import post_office.mail
 
 from django.utils import translation
 from django.utils.http import urlsafe_base64_decode 
+from django.utils import timezone
 import simplejson as json
 
 from paypal.standard.forms import PayPalPaymentsForm
@@ -54,6 +56,7 @@ import gdata.spreadsheet.service
 import gdata.spreadsheet.text_db
 
 from decimal import Decimal
+from dateutil.relativedelta import relativedelta
 import sys
 import datetime
 import settings
@@ -1026,3 +1029,191 @@ def ipn(request):
       viewutil.tracker_log('paypal', 'IPN creation failed: {0} \n {1}. POST data : {2}'.format(inst, traceback.format_exc(inst), request.POST))
 
   return HttpResponse("OKAY")
+
+
+class GraphView(TemplateView):
+    template_name = 'tracker/graphindex.html'
+
+    def get_context_data(self, *args, **kwargs):
+        context = super(GraphView, self).get_context_data(*args, **kwargs)
+        context['event'] = event = viewutil.get_event(kwargs['event'])
+        return context
+
+class GraphDataView(View):
+
+    # TODO: Test all times re: relative/timezones 
+    binned_datetime_format = '%Y-%m-%d %H:%M:%S'
+    point_datetime_format = '%Y-%m-%dT%H:%M:%S+00:00'
+
+    @classmethod
+    def extract_donation_schedule(cls, qs, truncate_by=None):
+        if not truncate_by:
+            raise TypeError('Please provide truncate_by')
+        (extra_query, extra_params) = connection.ops.datetime_trunc_sql(truncate_by, 'timereceived', None)
+        schedule = qs.extra(select={truncate_by: extra_query}, select_params=extra_params)\
+            .order_by()\
+            .values(truncate_by)\
+            .annotate(count=Count('amount'), total=Sum('amount'))
+        return schedule
+
+    def get_data(self, event):
+
+        data = {}
+
+        # TODO: Ordering donations based on timereceived might be an
+        # disadvantage people that are slow at clicking through the Paypal
+        # interface; add a timecompleted instead?
+        all_donations = filters.run_model_query('donation', {'event': event}, user=self.request.user).order_by('-timereceived')
+
+        if not all_donations:
+            return data
+
+        try:
+            replay_up_to = float(self.request.GET.get('replay', None))
+        except TypeError:
+            replay_up_to = None
+
+        event_moments = all_donations.aggregate(start=Min('timereceived'), end=Max('timereceived'));
+
+        if replay_up_to:
+            reference_moment = event_moments['start'] + datetime.timedelta(seconds=replay_up_to)
+        else:
+            reference_moment = event_moments['end']
+        reference_moment += relativedelta(microsecond=0) # When microseconds are non-zero isoformat() will change
+
+        print('Reference moment set to: ' + reference_moment.isoformat())
+
+        data['reference_moment'] = reference_moment.isoformat()
+        donations = all_donations.filter(timereceived__lt=reference_moment)
+
+        data['recent_donations'] = [
+            {
+                'moment': x.timereceived.isoformat(),
+                'amount': x.amount, 
+                'donor': x.donor.visible_name()
+            } for x in donations[:10]
+        ]
+
+        cutoff_24h = reference_moment - relativedelta(hours=24, minute=0, second=0)  # Note: minute and second are *set* to 0
+
+        # Last 24h.
+        data['bar_hourly_count'] = {
+            'meta': {
+                'start': cutoff_24h.isoformat(),
+                'end': (reference_moment + relativedelta(hours=1, minute=0, second=0)).isoformat(),
+            },
+            'data': self.get_context_bar_count_per_hour(donations.filter(timereceived__gt=cutoff_24h))
+        }
+        print('meta', data['bar_hourly_count']['meta'])
+
+        # When we drop support for Django<1.8 we can use https://docs.djangoproject.com/en/1.8/ref/models/conditional-expressions/ here
+        distribution_mapping = [
+            (50, 5),    # Everything under $50 is split in bins of $5
+            (100, 10),  # Everything under $100 is split in bins of $10
+            #(300, 20),  # Everything under $300 is split in bins of $20
+        ]
+        #distribution_mapping = [
+        #    (300, 1),
+        #]
+        distribution_graph = donations.filter(timereceived__gt=cutoff_24h).order_by().values('amount').annotate(count=Count('amount'))
+        distribution_bins = {}
+        # Pre-defining all bins so that D3 knows where to draw what
+        lower_limit = 0
+        for (end_value, binsize) in distribution_mapping:
+            for lower_limit in range(lower_limit, end_value, binsize):
+                distribution_bins[(lower_limit, lower_limit + binsize)] = 0
+                lower_limit = end_value
+        distribution_bins[(end_value, -1)] = 0  # Everything about end_value
+
+        # Put 13 donations for 13 dollar into the bin (10, 15) etc:
+        # TODO: Use distribution_mapping
+        for distribution_size in distribution_graph:
+            #if distribution_size['amount'] < 300:
+            #    distribution_bins[(int(distribution_size['amount']), int(distribution_size['amount']) + 1)] += distribution_size['count']
+            #else:
+            #    distribution_bins[(300, -1)] += distribution_size['count']
+            if distribution_size['amount'] < 50:
+                lower_five = int(distribution_size['amount']) / 5 * 5
+                upper_five = lower_five + 5
+                distribution_bins[(lower_five, upper_five)] += distribution_size['count']
+            elif distribution_size['amount'] < 100:
+                lower_ten = int(distribution_size['amount']) / 10 * 10
+                upper_ten= lower_ten + 10
+                distribution_bins[(lower_ten, upper_ten)] += distribution_size['count']
+            #elif distribution_size['amount'] < 300:
+            #    lower_twenty = int(distribution_size['amount']) / 20 * 20
+            #    upper_twenty = lower_twenty + 20
+            #    distribution_bins[(lower_twenty, upper_twenty)] += distribution_size['count']
+            else:
+                distribution_bins[(100, -1)] += distribution_size['count']
+
+        data['bardistribution'] = [
+            {'lower': lower, 'upper': upper, 'count': count} for ((lower, upper), count) in distribution_bins.iteritems()
+        ]
+
+        data['aggregated'] = donations.aggregate(amount=Sum('amount'), count=Count('amount'), max=Max('amount'), avg=Avg('amount'))
+
+        # TODO: Configure in admin per event, probably.
+        data['event'] = all_donations.aggregate(_start=Min('timereceived'), _end=Max('timereceived'))
+        data['event']['start'] = data['event']['_start'].isoformat()
+        data['event']['end'] = data['event']['_end'].isoformat()
+        event_span = data['event']['_end'] - data['event']['_start']
+        data['event']['point_0'] = (event_span / 4 * 1).total_seconds()
+        data['event']['point_1'] = (event_span / 4 * 2).total_seconds()
+        data['event']['point_2'] = (event_span / 4 * 3).total_seconds()
+
+        # Returning every single donations results in way too many data points
+        # on the graph, so we'll bin the values, The graph is 1000 pixels wide
+        # and an event takes about 10000 minutes, so if we bin per hour we get
+        # about 1 data point per pixel, more than enough with some nice interpolation.
+        #
+        # For the prettiest plot we have to make sure we start graphing at 0.
+
+        zero_point = {
+            # Note: minute and second are *set* to zero
+            'moment': (data['event']['_start'] - relativedelta(hours=1, minute=0, second=0)).strftime(self.binned_datetime_format),
+            'amount': 0,
+            'count': 0,
+        }
+
+        running_total_graph = self.extract_donation_schedule(donations, truncate_by='hour')
+        data['running_total'] = [zero_point] + [
+            {'moment': x['hour'], 'amount': x['total'], 'count': x['count']}
+            for x in running_total_graph
+        ]
+
+        # TODO: Make dynamic (admin?)
+        data['historic_events'] = [
+            {'name': 'Classic Games Done Quick', 'amount': 10531.64, 'count': 464},
+            {'name': 'AGDQ 2011', 'amount': 52519.83, 'count': 3253},
+            #{'name': 'Japan Relief Done Quick', 'amount': 25800.33, 'count': 1192},
+            {'name': 'SGDQ 2011', 'amount': 21396.76, 'count': 1118},
+            {'name': 'AGDQ 2012', 'amount': 149044.99, 'count': 5872},
+            {'name': 'SGDQ 2012', 'amount': 46278.99, 'count': 2207},
+            #{'name': 'Spooktacular', 'amount': 9732.99, 'count': 525},
+            {'name': 'AGDQ 2013', 'amount': 448425.27, 'count': 16308},
+            {'name': 'SGDQ 2013', 'amount': 257181.07, 'count': 10781},
+            {'name': 'AGDQ 2014', 'amount': 1031665.50, 'count': 28100},
+            {'name': 'SGDQ 2014', 'amount': 718235.07, 'count': 19104},
+            {'name': 'AGDQ 2015', 'amount': 1576085.00, 'count': 39501},
+            {'name': 'SGDQ 2015', 'amount': 1215700.34, 'count': 28528},
+        ]
+
+        del data['event']['_start']
+        del data['event']['_end']
+
+        return data
+
+    def get_context_bar_count_per_hour(self, donations):
+        hourly_graph = self.extract_donation_schedule(donations, truncate_by='hour')
+        return [
+            {'moment': x['hour'], 'total': x['total'], 'count': x['count']}
+            for x in hourly_graph
+        ]
+
+    def get(self, request, event=None):
+        event = viewutil.get_event(event)
+        return HttpResponse(
+            json.dumps(self.get_data(event)),
+            content_type='application/json',
+        )

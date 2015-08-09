@@ -1,11 +1,15 @@
 from django.conf.urls import patterns, include, url
 
+from tracker.views import GraphView, GraphDataView
+
 urlpatterns = patterns('tracker.views',
   url(r'^bids/(?P<event>\w+|)$', 'bidindex'),
   url(r'^bid/(?P<id>-?\d+)$', 'bid'),
 	url(r'^donors/(?P<event>\w+|)$', 'donorindex'),
 	url(r'^donor/(?P<id>-?\d+)/(?P<event>\w+|)$', 'donor'),
 	url(r'^donations/(?P<event>\w+|)$', 'donationindex'),
+	url(r'^graphs/(?P<event>\w+)$', GraphView.as_view(), name='graphindex'),
+	url(r'^graphs_data/(?P<event>\w+)$', GraphDataView.as_view(), name='graphdata'),
 	url(r'^donation/(?P<id>-?\d+)$', 'donation'),
 	url(r'^runs/(?P<event>\w+|)$', 'runindex'),
 	url(r'^run/(?P<id>-?\d+)$', 'run'),

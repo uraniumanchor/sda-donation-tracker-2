@@ -1,0 +1,52 @@
+.chart {
+	background: #eee;
+	width: 100%;
+	height: 250px;
+}
+.bar {
+  fill: steelblue;
+}
+
+.bar:hover {
+  fill: brown;
+}
+
+.axis {
+  font: 10px sans-serif;
+}
+
+.axis path,
+.axis line {
+  fill: none;
+  stroke: #000;
+  shape-rendering: crispEdges;
+}
+
+.x.axis path {
+  display: none;
+}
+.y.axis path {
+  display: none;
+}
+
+.animated-numbers {
+	font-family: "Lucida Console", Monaco, monospace;
+}
+
+.type2 .axis path,
+.type2 .axis line {
+  fill: none;
+  stroke: #000;
+  shape-rendering: crispEdges;
+}
+
+.type2 .line {
+  fill: none;
+  stroke: steelblue;
+  stroke-width: 1.5px;
+}
+.type2 .crossbar {
+  stroke: silver;
+  stroke-width: 0.5px;
+  font-size: 0.5em;
+}
