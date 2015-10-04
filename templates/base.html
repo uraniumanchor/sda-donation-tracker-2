@@ -73,6 +73,11 @@
  
           </ul>
         </li>
+
+        {% if event.id %}
+            <li><a href="{% url 'graphindex' event=event.id %}">{% trans "Graphs" %}</a></li>
+        {% endif %}
+
       </ul>
     </div>
   </div>

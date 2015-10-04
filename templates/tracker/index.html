@@ -30,6 +30,9 @@
 <p class="center-block"><a class="btn btn-default btn-block" href="{% url 'tracker.views.bidindex' event=event.id %}">{% trans "View Bids" %} ({{ count.bids }})</a></p>
 <p class="center-block"><a class="btn btn-default btn-block" href="{% url 'tracker.views.donorindex' event=event.id %}">{% trans "View Donors" %} ({{ count.donors }})</a></p>
 <p class="center-block"><a class="btn btn-default btn-block" href="{% url 'tracker.views.donationindex' event=event.id %}">{% trans "View Donations" %} ({{ agg.count }})</a></p>
+{% if event.id %}
+    <p class="center-block"><a class="btn btn-default btn-block" href="{% url 'graphindex' event=event.id %}">{% trans "View Graphs" %}</a></p>
+{% endif %}
 <p class="center-block"><a class="btn btn-info btn-block" href="{% url 'tracker.views.eventlist' %}">{% trans "Select another Event" %}</a></p>
 <br />
 {% if event.id and not event.locked %}
