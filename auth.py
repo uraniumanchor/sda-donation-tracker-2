@@ -49,7 +49,7 @@ class EmailLoginAuthBackend:
             return None
 
 def get_password_reset_email_template_name():
-    return getattr(settings, 'PASSWORD_RESET_EMAIL_TEMPLATE_NAME', 'password_reset_template')
+    return getattr(settings, 'PASSWORD_RESET_EMAIL_TEMPLATE_NAME', 'default_password_reset_template')
 
 #TODO: there should probably be something in the admin to manage the default email templates
 #TODO: get better control over when the auth links expire, and explicitly state the expiration time
@@ -57,6 +57,13 @@ def get_password_reset_email_template():
     return post_office.models.EmailTemplate.objects.get_or_create(
         name=get_password_reset_email_template_name(), 
         defaults={
+            'description': """A basic template for sending an e-mail to complete password reset. DO NOT USE THIS TEMPLATE. Copy the contents and modify it to suit your needs.
+
+The variables that will be defined are:
+user -- the user object
+domain -- the base domain you are redirecting to
+reset_url -- the url to follow to reset/set the account
+""",
             'subject': 'Password Reset',
             'content': """Hello {{ user }},
     You (or something pretending to be you) has requested a password reset for your account on {{ domain }}. Please follow this <a href="{{ reset_url }}">link</a> to reset your password.
@@ -68,15 +75,22 @@ def get_password_reset_email_template():
         })[0]
 
 # This will ensure the template always exists on server boot-up
-_ensurePasswordResetEmailTemplateExists = get_password_reset_email_template()
+_autocreate = get_password_reset_email_template()
 
 def get_register_email_template_name():
-    return getattr(settings, 'REGISTER_EMAIL_TEMPLATE_NAME', 'register_email_template')
+    return getattr(settings, 'REGISTER_EMAIL_TEMPLATE_NAME', 'default_register_email_template')
 
 def get_register_email_template():
     return post_office.models.EmailTemplate.objects.get_or_create(
         name=get_register_email_template_name(), 
         defaults={
+            'description': """A basic template for sending an e-mail to complete registration. DO NOT USE THIS TEMPLATE. Copy the contents and modify it to suit your needs.
+
+The variables that will be defined are:
+user -- the user object
+domain -- the base domain you are redirecting to
+reset_url -- the url to follow to reset/set the account
+""",
             'subject': 'Account Registration',
             'content': """Hello {{ user }},
     You (or something pretending to be you) has requested an account on {{ domain }}. Please follow this <a href="{{ reset_url }}">link</a> to complete registering your account.
@@ -87,7 +101,7 @@ def get_register_email_template():
 """,
         })[0]
 
-_ensureRegisterEmailTemplateExists = get_register_email_template()
+_autocreate = get_register_email_template()
 
 def make_auth_token_url_suffix(user, token_generator=default_token_generator):
     uid = urlsafe_base64_encode(force_bytes(user.pk))
