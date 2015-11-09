@@ -45,18 +45,20 @@ def get_referer_site(request):
     return None
 
 def get_event(event):
-  if event:
-    try:
-      if re.match(r'^\d+$', event):
-        return Event.objects.get(id=event)
-      else:
-        return Event.objects.get(short=event)
-    except Event.DoesNotExist:
-      raise Http404
-  e = Event()
-  e.id = None
-  e.name = 'All Events'
-  return e
+    if isinstance(event, Event):
+        return event
+    if event:
+        try:
+            if re.match(r'^\d+$', event):
+                return Event.objects.get(id=event)
+            else:
+                return Event.objects.get(short=event)
+        except Event.DoesNotExist:
+            raise Http404
+    e = Event()
+    e.id = None
+    e.name = 'All Events'
+    return e
 
 # Parses a 'natural language' list, i.e. seperated by commas, semi-colons, and 'and's
 def natural_list_parse(s):
