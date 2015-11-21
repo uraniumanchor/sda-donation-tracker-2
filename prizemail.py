@@ -100,7 +100,7 @@ def get_prize_submission_confirm_email_template():
     return post_office.models.EmailTemplate.objects.get_or_create(
         name=get_prize_submission_confirm_email_template_name(), 
         defaults={
-            'subject': '{% if multi %}You won some prizes at {{ event.name }}{% else %}You won a prize at {{ event.name }}{% endif %}',
+            'subject': '{{ event.name }} Prize Contributor Notification',
             'description': """A basic template for automailing back prize accept/reject notifications. DO NOT USE THIS TEMPLATE. Copy the contents and modify it to suit your needs.
 
 The variables that will be defined are:
