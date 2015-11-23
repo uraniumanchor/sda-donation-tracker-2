@@ -65,11 +65,15 @@ domain -- the base domain you are redirecting to
 reset_url -- the url to follow to reset/set the account
 """,
             'subject': 'Password Reset',
-            'content': """Hello {{ user }},
+            'html_content': """Hello {{ user }},
+    <p>
     You (or something pretending to be you) has requested a password reset for your account on {{ domain }}. Please follow this <a href="{{ reset_url }}">link</a> to reset your password.
-
+    </p>
+    
+    <p>
     This login link will expire after you reset your password.
-
+    </p>
+    
     - The Staff
 """,
         })[0]
@@ -92,12 +96,12 @@ domain -- the base domain you are redirecting to
 reset_url -- the url to follow to reset/set the account
 """,
             'subject': 'Account Registration',
-            'content': """Hello {{ user }},
+            'html_content': """Hello {{ user }},
+    <p>
     You (or something pretending to be you) has requested an account on {{ domain }}. Please follow this <a href="{{ reset_url }}">link</a> to complete registering your account.
-
-    This login link will only work once to register your account.
-
-    - The Staff
+    </p>
+    
+    - The GamesDoneQuick Staff
 """,
         })[0]
 
