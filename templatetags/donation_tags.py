@@ -214,6 +214,16 @@ def filmod(value,arg):
 def negate(value):
   return not value
 
+# TODO: maybe store visibility option in UserProfile
+@register.filter
+def public_user_name(user):
+    if user.donor:
+        return user.donor.visible_name()
+    elif user.username == user.email:
+        return u'Anonymous'
+    else:
+        return user.username
+
 @register.simple_tag
 def admin_url(obj):
   return viewutil.admin_url(obj)
@@ -253,6 +263,23 @@ def settings_value(name):
 def find_setting(name):
   return settings_value(name)
 
+@register.simple_tag(takes_context=True)
+def standardform(context, form, formid="formid", submittext='Submit', action=None, showrequired=True):
+    return template.loader.render_to_string('standardform.html', template.Context({ 'form': form, 'formid': formid, 'submittext': submittext, action: action, 'csrf_token': context.get('csrf_token', None), 'showrequired': showrequired }))
+
+@register.simple_tag(takes_context=True)
+def form_innards(context, form, showrequired=True):
+    return template.loader.render_to_string('form_innards.html', template.Context({ 'form': form, 'showrequired': showrequired, 'csrf_token': context.get('csrf_token', None)}))
+    
 @register.simple_tag
-def standardform(form, formid="formid", submittext='Submit', action=None, csrftoken=None ):
-  return template.loader.render_to_string('standardform.html', { 'form': form, 'formid': formid, 'submittext': submittext, 'csrftoken': csrftoken })
+def address(donor):
+    return template.loader.render_to_string('tracker/donor_address.html', template.Context({ 'donor': donor }))
+
+@register.filter('mail_name')
+def mail_name(donor):
+    if donor.visibility == 'ANON' or donor.visibility == 'ALIAS':
+        return 'Occupant'
+    elif donor.visibility == 'FIRST':
+        return donor.firstname + ' ' + donor.lastname[:1]
+    elif donor.visibility == 'FULL':
+        return donor.firstname + ' ' + donor.lastname

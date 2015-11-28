@@ -1,12 +1,16 @@
 from decimal import Decimal
 
+import pytz
+
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.db.models import Sum, Q
+from django.contrib.auth.models import User
+
 from ..validators import *
 from .event import LatestEvent
 from ..models import Event, Donation, SpeedRun
-import pytz
+import settings
 
 __all__ = [
   'Prize',
@@ -16,6 +20,7 @@ __all__ = [
   'DonorPrizeEntry',
 ]
 
+USER_MODEL_NAME = getattr(settings, 'AUTH_USER_MODEL', User)
 
 class PrizeManager(models.Manager):
   def get_by_natural_key(self, name, event):
@@ -45,14 +50,15 @@ class Prize(models.Model):
   endtime = models.DateTimeField(null=True,blank=True,verbose_name='End Time')
   maxwinners = models.IntegerField(default=1, verbose_name='Max Winners', validators=[positive, nonzero], blank=False, null=False)
   maxmultiwin = models.IntegerField(default=1, verbose_name='Max Wins per Donor', validators=[positive, nonzero], blank=False, null=False)
-  provided = models.CharField(max_length=64,blank=True, null=True, verbose_name='Provided By')
-  provideremail = models.EmailField(max_length=128, blank=True, null=True, verbose_name='Provider Email')
+  provider = models.ForeignKey(USER_MODEL_NAME, null=True)
   acceptemailsent = models.BooleanField(default=False, verbose_name='Accept/Deny Email Sent')
   creator = models.CharField(max_length=64, blank=True, null=True, verbose_name='Creator')
   creatoremail = models.EmailField(max_length=128, blank=True, null=True, verbose_name='Creator Email')
   creatorwebsite = models.CharField(max_length=128, blank=True, null=True, verbose_name='Creator Website')
   state = models.CharField(max_length=32,choices=(('PENDING', 'Pending'), ('ACCEPTED','Accepted'), ('DENIED', 'Denied'), ('FLAGGED','Flagged')),default='PENDING')
-
+  requiresshipping = models.BooleanField(default=True, verbose_name='Requires Postal Shipping')
+  reviewnotes = models.TextField(max_length=1024, null=False, blank=True, verbose_name='Review Notes', help_text='Notes for the contributor (for example, why a particular prize was denied)')
+  
   class Meta:
     app_label = 'tracker'
     ordering = [ 'event__date', 'startrun__starttime', 'starttime', 'name' ]
@@ -171,6 +177,18 @@ class Prize(models.Model):
   def get_prize_winners(self):
     return self.prizewinner_set.filter(Q(acceptcount__gte=1) | Q(pendingcount__gte=1))
 
+  def get_accepted_winners(self):
+    return self.prizewinner_set.filter(Q(acceptcount__gte=1))
+  
+  def has_accepted_winners(self):
+    return self.get_accepted_winners().exists()
+  
+  def is_pending_shipping(self):
+    return self.get_accepted_winners().filter(Q(shippingstate='PENDING')).exists()
+  
+  def is_fully_shipped(self):
+    return self.maxed_winners() and not self.is_pending_shipping()
+  
   def get_prize_winner(self):
     if self.maxwinners == 1:
       winners = self.get_prize_winners()
@@ -219,10 +237,16 @@ class PrizeWinner(models.Model):
   sumcount = models.IntegerField(default=1, null=False, blank=False, editable=False, validators=[positive], verbose_name='Sum Counts', help_text='The total number of prize instances associated with this winner')
   prize = models.ForeignKey('Prize', null=False, blank=False, on_delete=models.PROTECT)
   emailsent = models.BooleanField(default=False, verbose_name='Notification Email Sent')
+  # this is an integer because we want to re-send on each different number of accepts
+  acceptemailsentcount = models.IntegerField(default=0, null=False, blank=False, validators=[positive], verbose_name='Accept Count Sent For', help_text='The number of accepts that the previous e-mail was sent for (or 0 if none were sent yet).')
   shippingemailsent = models.BooleanField(default=False, verbose_name='Shipping Email Sent')
+  couriername = models.CharField(max_length=64, verbose_name='Courier Service Name', help_text="e.g. FedEx, DHL, ...", blank=True, null=False)
   trackingnumber = models.CharField(max_length=64, verbose_name='Tracking Number', blank=True, null=False)
   shippingstate = models.CharField(max_length=64, verbose_name='Shipping State', choices=(('PENDING','Pending'),('SHIPPED','Shipped')), default='PENDING')
   shippingcost = models.DecimalField(decimal_places=2,max_digits=20,null=True,blank=True,verbose_name='Shipping Cost',validators=[positive,nonzero])
+  winnernotes = models.TextField(max_length=1024, verbose_name='Winner Notes', null=False, blank=True)
+  shippingnotes = models.TextField(max_length=2048, verbose_name='Shipping Notes', null=False, blank=True)
+  acceptdeadline = models.DateTimeField(verbose_name='Winner Accept Deadline', default=None, null=True, blank=True, help_text='The deadline for this winner to accept their prize (leave blank for no deadline)')
 
   class Meta:
     app_label = 'tracker'
@@ -254,7 +278,9 @@ class PrizeWinner(models.Model):
       prizeSum += winner.acceptcount + winner.pendingcount
     if prizeSum > self.prize.maxwinners:
       raise ValidationError('Number of prize winners is greater than the maximum for this prize.')
-
+    if self.trackingnumber and not self.couriername:
+      raise ValidationError('A tracking number is only useful with a courier name as well!')
+      
   def validate_unique(self, **kwargs):
     if 'winner' not in kwargs and 'prize' not in kwargs and self.prize.category != None:
       for prizeWon in PrizeWinner.objects.filter(prize__category=self.prize.category, winner=self.winner, prize__event=self.prize.event):

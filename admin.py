@@ -85,7 +85,7 @@ class VerboseForeignKeyRawIdWidget(widgets.ForeignKeyRawIdWidget):
       try:
         obj = self.rel.to._default_manager.using(self.db).get(**{key: value})
         text = '<strong>%s</strong>' % escape(Truncator(obj).words(14, truncate='...'))
-        href = reverse('admin:%s_%s_change' % (obj._meta.app_label, obj._meta.module_name), args=(obj.pk,), current_app=self.admin_site.name)
+        href = reverse('admin:%s_%s_change' % (obj._meta.app_label, obj._meta.model_name), args=(obj.pk,), current_app=self.admin_site.name)
         return '&nbsp;' + ('<a href=%s>' % href) + text + '</a>'
       except (ValueError, self.rel.to.DoesNotExist):
         return u'???'
@@ -509,7 +509,7 @@ class PrizeWinnerAdmin(CustomModelAdmin):
   list_display = ['__unicode__', 'prize', 'winner']
   readonly_fields = ['winner_email',]
   fieldsets = [
-    (None, { 'fields': ['prize', 'winner', 'winner_email', 'emailsent', 'pendingcount', 'acceptcount', 'declinecount', ], }),
+    (None, { 'fields': ['prize', 'winner', 'winner_email', 'emailsent', 'pendingcount', 'acceptcount', 'declinecount', 'acceptdeadline', ], }),
     ('Shipping Info', { 'fields': ['shippingstate', 'shippingemailsent', 'trackingnumber', 'shippingcost'] })
   ]
   def winner_email(self, obj):
@@ -576,8 +576,9 @@ class DonorAdmin(CustomModelAdmin):
   list_filter = ('donation__event', 'visibility')
   readonly_fields = ('visible_name',)
   list_display = ('__unicode__', 'visible_name', 'alias', 'visibility')
+  raw_id_fields = ['user',]
   fieldsets = [
-    (None, { 'fields': ['email', 'alias', 'firstname', 'lastname', 'visibility', 'visible_name'] }),
+    (None, { 'fields': ['email', 'alias', 'firstname', 'lastname', 'visibility', 'visible_name', 'user'] }),
     ('Donor Info', {
       'classes': ['collapse'],
       'fields': ['paypalemail']
@@ -633,7 +634,15 @@ class EventAdmin(CustomModelAdmin):
     (None, { 'fields': ['short', 'name', 'receivername', 'targetamount', 'date', 'timezone', 'locked'] }),
     ('Paypal', {
       'classes': ['collapse'],
-      'fields': ['paypalemail', 'usepaypalsandbox', 'paypalcurrency', 'donationemailtemplate', 'pendingdonationemailtemplate', 'donationemailsender']
+      'fields': ['paypalemail', 'usepaypalsandbox', 'paypalcurrency', ]
+    }),
+    ('Donation Autoreply', {
+      'classes': ['collapse',],
+      'fields': ['donationemailsender', 'donationemailtemplate', 'pendingdonationemailtemplate',],
+    }),
+    ('Prize Management', {
+      'classes': ['collapse',],
+      'fields': ['prizecoordinator', 'prizecontributoremailtemplate', 'prizewinneremailtemplate', 'prizewinneracceptemailtemplate', 'prizeshippedemailtemplate',],
     }),
     ('Google Document', {
       'classes': ['collapse'],
@@ -696,18 +705,19 @@ class PrizeInline(CustomStackedInline):
 
 class PrizeAdmin(CustomModelAdmin):
   form = PrizeForm
-  list_display = ('name', 'category', 'bidrange', 'games', 'starttime', 'endtime', 'sumdonations', 'randomdraw', 'event', 'winners_' )
+  list_display = ('name', 'category', 'bidrange', 'games', 'starttime', 'endtime', 'sumdonations', 'randomdraw', 'event', 'winners_', 'provider' )
   list_filter = ('event', 'category', 'state', PrizeListFilter)
+  raw_id_fields = ['provider']
   fieldsets = [
-    (None, { 'fields': ['name', 'description', 'shortdescription', 'image', 'altimage', 'event', 'state', 'category', ] }),
+    (None, { 'fields': ['name', 'description', 'shortdescription', 'image', 'altimage', 'event', 'category', 'requiresshipping', ] }),
     ('Contributor Information', {
-      'fields': ['provided', 'provideremail', 'creator', 'creatoremail', 'creatorwebsite', 'extrainfo', 'estimatedvalue', 'acceptemailsent' ] }),
+      'fields': ['provider', 'creator', 'creatoremail', 'creatorwebsite', 'extrainfo', 'estimatedvalue', 'acceptemailsent', 'state', 'reviewnotes',] }),
     ('Drawing Parameters', {
       'classes': ['collapse'],
       'fields': ['maxwinners', 'maxmultiwin', 'minimumbid', 'maximumbid', 'sumdonations', 'randomdraw', 'ticketdraw', 'startrun', 'endrun', 'starttime', 'endtime']
     }),
   ]
-  search_fields = ('name', 'description', 'shortdescription', 'provided', 'prizewinner__winner__firstname', 'prizewinner__winner__lastname', 'prizewinner__winner__alias', 'prizewinner__winner__email')
+  search_fields = ('name', 'description', 'shortdescription', 'provider__username', 'provider__email', 'provider__lastname', 'provider__firstname', 'prizewinner__winner__firstname', 'prizewinner__winner__lastname', 'prizewinner__winner__alias', 'prizewinner__winner__email')
   inlines = [PrizeWinnerInline]
   def winners_(self, obj):
     winners = obj.get_winners()
@@ -830,7 +840,7 @@ class SpeedRunAdmin(CustomModelAdmin):
     return filters.run_model_query('run', params, user=request.user, mode='admin')
 
 class LogAdminForm(djforms.ModelForm):
-  event = make_admin_ajax_field(tracker.models.SpeedRun, 'event', 'event', initial=latest_event_id)
+  event = make_admin_ajax_field(tracker.models.Log, 'event', 'event', initial=latest_event_id)
   class Meta:
     model = tracker.models.Log
     exclude = ('', '')
@@ -860,6 +870,7 @@ class LogAdmin(CustomModelAdmin):
     return self.has_log_edit_perms(request, obj)
   def has_log_edit_perms(self, request, obj=None):
     return request.user.has_perm('tracker.can_change_log') and (obj == None or obj.event == None or (request.user.has_perm('tracker.can_edit_locked_events') or not obj.event.locked))
+
 
 class AdminActionLogEntryFlagFilter(SimpleListFilter):
   title = 'Action Type'
@@ -1003,6 +1014,9 @@ def automail_prize_winners(request):
   if request.method == 'POST':
     form = forms.AutomailPrizeWinnersForm(prizewinners=prizewinners, data=request.POST)
     if form.is_valid():
+      for prizeWinner in form.cleaned_data['prizewinners']:
+        prizeWinner.acceptdeadline = form.cleaned_data['acceptdeadline']
+        prizeWinner.save()
       prizemail.automail_prize_winners(currentEvent, form.cleaned_data['prizewinners'], form.cleaned_data['emailtemplate'], sender=form.cleaned_data['fromaddress'], replyTo=form.cleaned_data['replyaddress'])
       viewutil.tracker_log(u'prize', u'Mailed prize notifications', event=currentEvent, user=request.user)
       return render(request, 'admin/automail_prize_winners_post.html', { 'prizewinners': form.cleaned_data['prizewinners'] })
