@@ -1,3 +1,6 @@
+import json
+from django.http.response import Http404
+
 from django.contrib.auth.decorators import user_passes_test
 from django.db import transaction, connection
 from tracker.models import *
@@ -5,16 +8,12 @@ import tracker.filters as filters
 from tracker.views.common import tracker_response
 import tracker.viewutil as viewutil
 import tracker.logutil as logutil
-
 from django.http import HttpResponse
-from django.core.exceptions import FieldError,ObjectDoesNotExist,ValidationError
+from django.core.exceptions import FieldError, ObjectDoesNotExist, ValidationError, PermissionDenied
 from django.db.utils import IntegrityError
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
-from django.views.decorators.http import require_POST
 import django.core.serializers as serializers
-
-import json
 
 __all__ = [
     'search',
@@ -27,6 +26,8 @@ __all__ = [
     'merge_schedule',
     'refresh_schedule',
     'parse_value',
+    'me',
+    'api_v1',
 ]
 
 modelmap = {
@@ -116,8 +117,26 @@ def prize_privacy_filter(model, fields):
     if model != 'prize':
         return
     del fields['extrainfo']
-    del fields['provideremail']
+    del fields['acceptemailsent']
+    del fields['state']
+    del fields['reviewnotes']
 
+# honestly, I wonder if prizewinner as a whole should not be publicly visible
+# REALLY need that whitelist system soon
+def prizewinner_privacy_filter(model, fields):
+    if model != 'prizewinner':
+        return
+    del fields['couriername']
+    del fields['trackingnumber']
+    del fields['shippingstate']
+    del fields['shippingcost']
+    del fields['winnernotes']
+    del fields['shippingnotes']
+    del fields['emailsent']
+    del fields['acceptemailsentcount']
+    del fields['shippingemailsent']
+    del fields['auth_code']
+    
 @never_cache
 def search(request):
     authorizedUser = request.user.has_perm('tracker.can_search')
@@ -136,7 +155,11 @@ def search(request):
         jsonData = json.loads(serializers.serialize('json', qs, ensure_ascii=False))
         objs = dict(map(lambda o: (o.id,o), qs))
         for o in jsonData:
-            o['fields']['public'] = repr(objs[int(o['pk'])])
+            baseObj = objs[int(o['pk'])]
+            if isinstance(baseObj, Donor):
+                o['fields']['public'] = baseObj.visible_name()
+            else:
+                o['fields']['public'] = unicode(baseObj)
             for a in viewutil.ModelAnnotations.get(searchtype,{}):
                 o['fields'][a] = unicode(getattr(objs[int(o['pk'])],a))
             for r in related.get(searchtype,[]):
@@ -150,7 +173,10 @@ def search(request):
                     if f[0] == '_' or f.endswith('id') or f in defer.get(searchtype,[]): continue
                     v = relatedData["fields"][f]
                     o['fields'][r + '__' + f] = relatedData["fields"][f]
-                o['fields'][r + '__public'] = repr(ro)
+                if isinstance(ro, Donor):
+                    o['fields'][r + '__public'] = ro.visible_name()
+                else:
+                    o['fields'][r + '__public'] = unicode(ro)
             if not authorizedUser:
                 donor_privacy_filter(searchtype, o['fields'])
                 donation_privacy_filter(searchtype, o['fields'])
@@ -186,6 +212,10 @@ def parse_value(field, value):
         else:
             return model.objects.get(id=int(value))
     return value
+
+def api_v1(request):
+    # only here to give a root access point
+    raise Http404
 
 @csrf_exempt
 @never_cache
@@ -421,4 +451,23 @@ def command(request):
     resp = HttpResponse(output, content_type='application/json;charset=utf-8')
     if 'queries' in request.GET and request.user.has_perm('tracker.view_queries'):
         return HttpResponse(json.dumps(connection.queries, ensure_ascii=False, indent=1), status=status, content_type='application/json;charset=utf-8')
+    return resp
+
+
+@never_cache
+def me(request):
+    if request.user.is_anonymous() or not request.user.is_active:
+        raise PermissionDenied
+    output = {
+        'username': request.user.username
+    }
+    if request.user.is_superuser:
+        output['superuser'] = True
+    if request.user.is_staff:
+        output['staff'] = True
+    if request.user.user_permissions.exists():
+        output['permissions'] = ['%s.%s' % (p.content_type.app_label, p.codename) for p in request.user.user_permissions.all()]
+    resp = HttpResponse(json.dumps(output), content_type='application/json;charset=utf-8')
+    if 'queries' in request.GET and request.user.has_perm('tracker.view_queries'):
+        return HttpResponse(json.dumps(connection.queries, ensure_ascii=False, indent=1), status=200, content_type='application/json;charset=utf-8')
     return resp

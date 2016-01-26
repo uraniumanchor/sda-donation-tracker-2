@@ -22,8 +22,15 @@ urlpatterns = patterns(
     url(r'^edit/$', 'edit'),
     url(r'^delete/$', 'delete'),
     url(r'^command/$', 'command'),
-    url(r'^index/(?P<event>\w+|)$', 'index'),
-    url(r'^submit_prize/(?P<event>\w+)$', 'submit_prize'),
+    url(r'^me/$', 'me'),
+    url(r'^api/v1/$', 'api_v1'),
+    url(r'^api/v1/search/$', 'search'),
+    url(r'^api/v1/add/$', 'add'),
+    url(r'^api/v1/edit/$', 'edit'),
+    url(r'^api/v1/delete/$', 'delete'),
+    url(r'^api/v1/command/$', 'command'),
+    url(r'^api/v1/me/$', 'me'),
+    url(r'^index/(?P<event>\w+|)$', 'index', name='index'),
     url(r'^donate/(?P<event>\w+)$', 'donate', name='donate'),
     # unfortunately, using the 'word' variant here clashes with the admin site (not to mention any unparameterized urls), so I guess its going to have to be this way for now.  I guess that ideally, one would only use the 'index' url, and redirect to it as neccessary).
     url(r'^(?P<event>\d+|)$', 'index'),
@@ -31,6 +38,10 @@ urlpatterns = patterns(
     url(r'^paypal_cancel/$', 'paypal_cancel', name='paypal_cancel'),
     url(r'^ipn/$', 'ipn', name='ipn'),
     url(r'^admin/refresh_schedule/$', 'refresh_schedule'),  # ugly hack: has to be here or we get auth intercepted
+    url(r'^user/index/$', 'user_index', name='user_index'),
+    url(r'^user/user_prize/(?P<prize>\d+)$', 'user_prize', name='user_prize'),
+    url(r'^user/prize_winner/(?P<prize_win>\d+)$', 'prize_winner', name='prize_winner'),
+    url(r'^user/submit_prize/(?P<event>\w+)$', 'submit_prize', name='submit_prize'),
     url(r'^user/login/$', 'login', name='login'),
     url(r'^user/logout/$', 'logout', name='logout'),
     url(r'^user/password_reset/$', 'password_reset', name='password_reset'),
@@ -39,6 +50,7 @@ urlpatterns = patterns(
     url(r'^user/password_reset_complete/$', 'password_reset_complete', name='password_reset_complete'),
     url(r'^user/password_change/$', 'password_change', name='password_change'),
     url(r'^user/password_change_done/$', 'password_change_done', name='password_change_done'),
+    url(r'^user/register/$', 'register', name='register'),
     url(r'^user/confirm_registration/$', 'confirm_registration', name='confirm_registration'),
 )
 

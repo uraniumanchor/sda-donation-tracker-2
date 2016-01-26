@@ -54,7 +54,7 @@
 				</a>
 			</td>
       <td>
-      {{ prize.provided }}
+      {{ prize.provider }}
       </td>
 			<td>
 				{{ prize.minimumbid|money }}
@@ -62,13 +62,13 @@
 			<td>
 				{% if prize.startrun %}
 					<a href="{% url 'tracker.views.run' id=prize.startrun.id %}">
-						{{ prize.startrun.name|title }}
+						{{ prize.startrun.name_with_category|title }}
 					</a>
 				{% endif %}
 				{% if prize.startrun != prize.endrun %}
 					<i class="fa fa-arrows-h"></i>
 					<a href="{% url 'tracker.views.run' id=prize.endrun.id %}">
-						{{ prize.endrun.name|title }}
+						{{ prize.endrun.name_with_category|title }}
 					</a>
 				{% endif %}
 			</td>
@@ -88,7 +88,7 @@
 				{% if prize.get_winners %}
 					{% for winner in prize.get_winners %}
 					{% if not forloop.first %} - {% endif %}
-				<a href="{% url 'tracker.views.donor' id=winner.id  event=prize.event.id%}">
+				<a href="{% url 'tracker.views.donor' id=winner.id  event=prize.event.short %}">
 					{% if winner.lastname %}
 					{% name winner %}
 					{% else %}
@@ -105,4 +105,4 @@
 	</table>
 {% include "tracker/navfooter.html" %}
 {% endblock %}
->>>>>>> Add Matt's styling to site
+

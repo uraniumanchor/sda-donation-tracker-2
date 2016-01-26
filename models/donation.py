@@ -5,7 +5,9 @@ from django.db.models import signals
 from django.db.models import Count,Sum,Max,Avg
 from django.core.exceptions import ValidationError
 from django.dispatch import receiver
+from django.contrib.auth.models import User
 from .event import LatestEvent
+from .fields import OneToOneOrNoneField
 from ..validators import *
 from django.utils import timezone
 
@@ -137,13 +139,14 @@ class Donor(models.Model):
   firstname = models.CharField(max_length=64,blank=True,verbose_name='First Name')
   lastname = models.CharField(max_length=64,blank=True,verbose_name='Last Name')
   visibility = models.CharField(max_length=32, null=False, blank=False, default='FIRST', choices=DonorVisibilityChoices)
-
+  user = OneToOneOrNoneField(User, null=True, blank=True)
+  
   # Address information, yay!
   addresscity = models.CharField(max_length=128,blank=True,null=False,verbose_name='City')
   addressstreet = models.CharField(max_length=128,blank=True,null=False,verbose_name='Street/P.O. Box')
   addressstate = models.CharField(max_length=128,blank=True,null=False,verbose_name='State/Province')
   addresszip = models.CharField(max_length=128,blank=True,null=False,verbose_name='Zip/Postal Code')
-  addresscountry = models.CharField(max_length=128,blank=True,null=False,verbose_name='Country')
+  addresscountry = models.ForeignKey('Country',null=True,blank=True,default=None,verbose_name='Country')
 
   # Donor specific info
   paypalemail = models.EmailField(max_length=128,unique=True,null=True,blank=True,verbose_name='Paypal Email')
@@ -166,10 +169,10 @@ class Donor(models.Model):
       self.paypalemail = None
 
   def contact_name(self):
-    if self.alias:
-      return self.alias
     if self.firstname:
       return self.firstname + ' ' + self.lastname
+    if self.alias:
+      return self.alias
     return self.email
 
   def visible_name(self):
