@@ -1,0 +1,55 @@
+{% extends "tracker/index.html" %}
+{% load donation_tags %}
+{% load i18n %}
+
+{% block title %}{% trans "Self Service" %}{% endblock %}
+
+{% block content %}
+
+<h3>Self Service Options</h3>
+
+{% if not eventList %}
+  There are no events to show
+{% else %}
+
+<small>(Click an event to expand/contract)</small>
+
+{% for eventInfo in eventList %}
+<h5><a data-toggle="collapse" href="#{{ eventInfo.event.short}}_div">{{ eventInfo.eventname }} {% if eventInfo.event.locked %}(past event){% endif %}</a></h5>
+<div id="{{ eventInfo.event.short}}_div" class="collapse{% if not eventInfo.event.locked %} in{% endif %}">
+  <ul>
+  {% if eventInfo.submission %}
+    <li><a href="{% url 'tracker.views.submit_prize' event=eventInfo.eventid %}">Submit prize for {{ eventInfo.eventname }}</a></li>
+  {% endif %}
+  
+  {% if eventInfo.prizes %}
+    <li> Prizes you've submitted:
+      <ul>
+      {% for prize in eventInfo.prizes %}
+        <li><a href="{% url 'tracker.views.user_prize' prize=prize.id %}">{{ prize.name }}</a>
+        {% if prize.state == 'PENDING' %}
+            <small>(pending confirmation)</small>
+        {% elif prize.state == 'DENIED' %}
+            <small style="color:red">(Not Accepted)</small>
+        {% elif prize.is_pending_shipping > 0 %}
+            <small>(needs shipping)</small>
+        {% elif prize.is_fully_shipped %}
+            <small>(shipping complete)</small>
+        {% endif %}
+        </li>
+      {% endfor %}
+      </ul>
+    </li>
+  {% endif %}
+  
+  </ul>
+</div>
+{% endfor %}
+
+{% endif %}
+
+<br />
+<a href="{% url 'tracker.views.logout' %}">Log Out</a>
+<br />
+
+{% endblock %}

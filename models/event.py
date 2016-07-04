@@ -1,16 +1,24 @@
 import re
 import datetime
+import pytz
+import decimal
+
+from timezone_field import TimeZoneField
+
+from oauth2client.django_orm import FlowField,CredentialsField
+from oauth2client.client import OAuth2WebServerFlow
 
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.db.utils import OperationalError
 from django.core import validators
+from django.contrib.auth.models import User
+
 import post_office.models
+
+import tracker.util as util
+
 from ..validators import *
-from oauth2client.django_orm import FlowField,CredentialsField
-from oauth2client.client import OAuth2WebServerFlow
-import pytz
-from timezone_field import TimeZoneField
 
 __all__ = [
   'FlowModel',
@@ -134,6 +142,7 @@ class Event(models.Model):
   name = models.CharField(max_length=128)
   receivername = models.CharField(max_length=128,blank=True,null=False,verbose_name='Receiver Name')
   targetamount = models.DecimalField(decimal_places=2,max_digits=20,validators=[positive,nonzero],verbose_name='Target Amount')
+  minimumdonation = models.DecimalField(decimal_places=2, max_digits=20,validators=[positive,nonzero],verbose_name='Minimum Donation', help_text='Enforces a minimum donation amount on the donate page.', default=decimal.Decimal('1.00'))
   usepaypalsandbox = models.BooleanField(default=False,verbose_name='Use Paypal Sandbox')
   paypalemail = models.EmailField(max_length=128,null=False,blank=False, verbose_name='Receiver Paypal')
   paypalcurrency = models.CharField(max_length=8,null=False,blank=False,default=_currencyChoices[0][0],choices=_currencyChoices, verbose_name='Currency')
@@ -152,7 +161,15 @@ class Event(models.Model):
   date = models.DateField()
   timezone = TimeZoneField(default='US/Eastern')
   locked = models.BooleanField(default=False,help_text='Requires special permission to edit this event or anything associated with it')
-
+  # Fields related to prize management
+  prizecoordinator = models.ForeignKey(User, default=None, null=True, blank=True, verbose_name='Prize Coordinator', help_text='The person responsible for managing prize acceptance/distribution')
+  allowed_prize_countries = models.ManyToManyField('Country', blank=True, verbose_name="Allowed Prize Countries", help_text="List of countries whose residents are allowed to receive prizes (leave blank to allow all countries)")
+  disallowed_prize_regions = models.ManyToManyField('CountryRegion', blank=True, verbose_name='Disallowed Regions', help_text='A blacklist of regions within allowed countries that are not allowed for drawings (e.g. Quebec in Canada)')
+  prize_accept_deadline_delta = models.IntegerField(default=14, null=False, blank=False, verbose_name='Prize Accept Deadline Delta', help_text='The number of days a winner will be given to accept a prize before it is re-rolled.', validators=[positive, nonzero])
+  prizecontributoremailtemplate = models.ForeignKey(post_office.models.EmailTemplate, default=None, null=True, blank=True, verbose_name='Prize Contributor Accept/Deny Email Template', help_text="Email template to use when responding to prize contributor's submission requests", related_name='event_prizecontributortemplates')
+  prizewinneremailtemplate = models.ForeignKey(post_office.models.EmailTemplate, default=None, null=True, blank=True, verbose_name='Prize Winner Email Template', help_text="Email template to use when someone wins a prize.", related_name='event_prizewinnertemplates')
+  prizewinneracceptemailtemplate = models.ForeignKey(post_office.models.EmailTemplate, default=None, null=True, blank=True, verbose_name='Prize Accepted Email Template', help_text="Email template to use when someone accepts a prize (and thus it needs to be shipped).", related_name='event_prizewinneraccepttemplates')
+  prizeshippedemailtemplate = models.ForeignKey(post_office.models.EmailTemplate, default=None, null=True, blank=True, verbose_name='Prize Shipped Email Template', help_text="Email template to use when the aprize has been shipped to its recipient).", related_name='event_prizeshippedtemplates')
 
   def __unicode__(self):
     return self.name
@@ -233,10 +250,12 @@ class Event(models.Model):
 
 
 def LatestEvent():
-  try:
-    return Event.objects.latest()
-  except (Event.DoesNotExist, OperationalError):
-    return None
+  if Event.objects.exists():
+    try:
+      return Event.objects.latest()
+    except (Event.DoesNotExist, OperationalError):
+      return None
+  return None
 
 class PostbackURL(models.Model):
   event = models.ForeignKey('Event', on_delete=models.PROTECT, verbose_name='Event', null=False, blank=False, related_name='postbacks')
@@ -264,6 +283,7 @@ class SpeedRun(models.Model):
   objects = SpeedRunManager()
   event = models.ForeignKey('Event', on_delete=models.PROTECT, default=LatestEvent)
   name = models.CharField(max_length=64)
+  display_name = models.TextField(max_length=256, blank=True, verbose_name='Display Name', help_text='How to display this game on the stream.')
   deprecated_runners = models.CharField(max_length=1024, blank=True, verbose_name='*DEPRECATED* Runners', editable=False, validators=[runners_exists]) # This field is now deprecated, we should eventually set up a way to migrate the old set-up to use the donor links
   console = models.CharField(max_length=32,blank=True)
   commentators = models.CharField(max_length=1024,blank=True)
@@ -274,12 +294,20 @@ class SpeedRun(models.Model):
   run_time = TimestampField(always_show_h=True)
   setup_time = TimestampField(always_show_h=True)
   runners = models.ManyToManyField('Runner')
+  coop = models.BooleanField(default=False, help_text='Cooperative runs should be marked with this for layout purposes')
+  category = models.CharField(max_length=64, blank=True, null=True, help_text='The type of run being performed')
+  release_year = models.IntegerField(blank=True, null=True, verbose_name='Release Year', help_text='The year the game was released')
+  giantbomb_id = models.IntegerField(blank=True, null=True, verbose_name='GiantBomb Database ID', help_text='Identifies the game in the GiantBomb database, to allow auto-population of game data.')
+  tech_notes = models.TextField(blank=True, help_text='Notes for the tech crew')
 
   class Meta:
     app_label = 'tracker'
     verbose_name = 'Speed Run'
-    unique_together = (( 'name','event' ), ('event', 'order'))
+    unique_together = (( 'name','category','event' ), ('event', 'order'))
     ordering = [ 'event__date', 'order' ]
+    permissions = (
+      ('can_view_tech_notes', 'Can view tech notes'),
+    )
 
   def natural_key(self):
     return (self.name,self.event.natural_key())
@@ -287,42 +315,63 @@ class SpeedRun(models.Model):
   def clean(self):
     if not self.name:
       raise ValidationError('Name cannot be blank')
+    if not self.display_name:
+        self.display_name = self.name
 
   def save(self, fix_time=True, fix_runners=True, *args, **kwargs):
-    fix_time = self.order and self.run_time and self.setup_time and fix_time # we can't fix the time without all of these
-    fix_runners = self.id and fix_runners
+    can_fix_time = self.order != None and (self.run_time != 0 or self.setup_time != 0)
     i = TimestampField.time_string_to_int
-    if fix_time:
+
+    # fix our own time
+    if fix_time and can_fix_time:
       prev = SpeedRun.objects.filter(event=self.event, order__lt=self.order).last()
       if prev:
         self.starttime = prev.starttime + datetime.timedelta(milliseconds=i(prev.run_time)+i(prev.setup_time))
       else:
-        self.starttime = datetime.datetime.combine(self.event.date, datetime.time(12, tzinfo=self.event.timezone))
+        self.starttime = self.event.timezone.localize(datetime.datetime.combine(self.event.date, datetime.time(11,30)))
       self.endtime = self.starttime + datetime.timedelta(milliseconds=i(self.run_time)+i(self.setup_time))
-    if fix_runners:
+
+    if fix_runners and self.id:
       if not self.runners.exists():
         try:
-          self.runners.add(*[Runner.objects.get_by_natural_key(r.strip()) for r in self.deprecated_runners.split(',')])
+          self.runners.add(*[Runner.objects.get_by_natural_key(r) for r in util.natural_list_parse(self.deprecated_runners, symbol_only=True)])
         except Runner.DoesNotExist:
           pass
       if self.runners.exists():
         self.deprecated_runners = u', '.join(unicode(r) for r in self.runners.all())
 
     super(SpeedRun, self).save(*args, **kwargs)
-    if fix_time and self.order:
-      next = SpeedRun.objects.filter(event=self.event, order__gt=self.order).first()
-      if next and next.starttime != self.starttime + datetime.timedelta(milliseconds=i(self.run_time)+i(self.setup_time)):
-        return [self] + next.save(*args, **kwargs)
+
+    # fix up all the others if requested
+    if fix_time:
+      if can_fix_time:
+        next = SpeedRun.objects.filter(event=self.event, order__gt=self.order).first()
+        starttime = self.starttime + datetime.timedelta(milliseconds=i(self.run_time)+i(self.setup_time))
+        if next and next.starttime != starttime:
+          return [self] + next.save(*args, **kwargs)
+      elif self.starttime:
+        prev = SpeedRun.objects.filter(event=self.event, starttime__lte=self.starttime).exclude(order=None).last()
+        if prev:
+          self.starttime = prev.starttime + datetime.timedelta(milliseconds=i(prev.run_time)+i(prev.setup_time))
+        else:
+          self.starttime = self.event.timezone.localize(datetime.datetime.combine(self.event.date, datetime.time(12)))
+        next = SpeedRun.objects.filter(event=self.event, starttime__gte=self.starttime).exclude(order=None).first()
+        if next and next.starttime != self.starttime:
+          return [self] + next.save(*args, **kwargs)
     return [self]
 
+  def name_with_category(self):
+    categoryString = ' ' + self.category if self.category else ''
+    return u'{0}{1}'.format(self.name, categoryString)
+
   def __unicode__(self):
-    return u'%s (%s)' % (self.name,self.event)
+    return u'{0} ({1})'.format(self.name_with_category(), self.event)
 
 
 class Runner(models.Model):
   class _Manager(models.Manager):
     def get_by_natural_key(self, name):
-      return self.get(name=name)
+      return self.get(name__iexact=name)
 
     def get_or_create_by_natural_key(self, name):
       return self.get_or_create(name=name)
@@ -351,9 +400,9 @@ class Submission(models.Model):
   external_id = models.IntegerField(primary_key=True)
   run = models.ForeignKey('SpeedRun')
   runner = models.ForeignKey('Runner')
-  game_name = models.TextField(max_length=64)
-  category = models.TextField(max_length=32)
-  console = models.TextField(max_length=32)
+  game_name = models.CharField(max_length=64)
+  category = models.CharField(max_length=64)
+  console = models.CharField(max_length=32)
   estimate = TimestampField(always_show_h=True)
 
   def __unicode__(self):
@@ -363,6 +412,9 @@ class Submission(models.Model):
     super(Submission, self).save(*args, **kwargs)
     ret = [self]
     save_run = False
+    if not self.run.category:
+      self.run.category = self.cateogry
+      save_run = True
     if not self.run.description:
       self.run.description = self.category
       save_run = True

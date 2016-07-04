@@ -46,12 +46,12 @@ _GeneralFields = {
   'donation'      : [ 'donor', 'comment', 'modcomment' ],
   'donor'         : [ 'email', 'alias', 'firstname', 'lastname', 'paypalemail' ],
   'event'         : [ 'short', 'name' ],
-  'prize'         : [ 'name', 'description', 'shortdescription', 'prizewinner' ],
+  'prize'         : [ 'name', 'description', 'shortdescription', 'prizewinner', 'provider' ],
   'prizeticket'   : [ 'prize', 'donation', ],
   'prizecategory' : [ 'name', ],
   'prizewinner'   : [ 'prize', 'winner' ],
   'prizeentry'    : [ 'prize', 'donor' ],
-  'run'           : [ 'name', 'description', 'runners' ],
+  'run'           : [ 'name', 'description', ],
   'log'           : [ 'category', 'message', 'event' ],
   'runner'        : [ 'name', 'stream', 'twitter', 'youtube', ],
 }
@@ -189,6 +189,8 @@ _SpecificFields = {
     'name'        : 'name__icontains',
     'short'       : 'short__iexact',
     'locked'      : 'locked',
+    'date_lte'    : 'date__lte',
+    'date_gte'    : 'date__gte',
   },
   'prize': {
     'event'                : 'event',
@@ -210,6 +212,9 @@ _SpecificFields = {
     'randomdraw'           : 'randomdraw',
     'ticketdraw'           : 'ticketdraw',
     'state'                : 'state',
+    'provider'             : 'provider__icontains',
+    'handler'              : 'handler',
+    'creator'              : 'creator',
   },
   'prizeticket' : {
     'event'                : 'donation__event',
@@ -255,7 +260,7 @@ _SpecificFields = {
     'locked'         : 'event__locked',
     'name'           : 'name__icontains',
     'runner'         : 'runners',
-    'runnername'     : 'runners__alias__icontains',
+    'runnername'     : 'runners__name__icontains',
     'description'    : 'description__icontains',
     'starttime_lte'  : 'starttime__lte',
     'starttime_gte'  : 'starttime__gte',
@@ -325,6 +330,13 @@ def add_permissions_checks(rootmodel, key, query, user=None):
     # Prevent 'hidden' bids from showing up in public queries
     if (field == 'state') and (user == None or not user.has_perm('tracker.view_hidden')):
       query &= ~Q(**{ key: 'HIDDEN' })
+  elif rootmodel == 'prize':
+    if field in ['extrainfo', 'acceptemailsent', 'state', 'reviewnotes',]:
+        query = Q()
+  elif rootmodel == 'prizewinner':
+    # this list of blacklisted fields should probably be a global property of the model or something
+    if field in ['trackingnumber', 'couriername', 'winnernotes', 'shippingnotes', 'shippingcost', 'shippingstate', 'emailsent', 'acceptemailsentcount', 'shippingemailsent', ]:
+        query = Q()
   return query
 
 def recurse_keys(key, fromModels=[]):
@@ -656,4 +668,8 @@ def apply_feed_filter(query, model, feedName, params, user=None, noslice=False):
   elif model == 'bidsuggestion':
     if feedName == 'expired':
       query = query.filter(bid__state='CLOSED')
+  elif model == 'event':
+    if feedName == 'future':
+        offsettime = default_time(params.get('offset', None))
+        query = query.filter(date__gte=offsettime)
   return query

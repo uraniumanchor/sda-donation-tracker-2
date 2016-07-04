@@ -1,12 +1,19 @@
 from decimal import Decimal
 
+import pytz
+
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.core.urlresolvers import reverse
 from django.db.models import Sum, Q
+from django.contrib.auth.models import User
+
 from ..validators import *
 from .event import LatestEvent
 from ..models import Event, Donation, SpeedRun
-import pytz
+import tracker.util as util
+
+import settings
 
 __all__ = [
   'Prize',
@@ -16,6 +23,7 @@ __all__ = [
   'DonorPrizeEntry',
 ]
 
+USER_MODEL_NAME = getattr(settings, 'AUTH_USER_MODEL', User)
 
 class PrizeManager(models.Manager):
   def get_by_natural_key(self, name, event):
@@ -45,14 +53,19 @@ class Prize(models.Model):
   endtime = models.DateTimeField(null=True,blank=True,verbose_name='End Time')
   maxwinners = models.IntegerField(default=1, verbose_name='Max Winners', validators=[positive, nonzero], blank=False, null=False)
   maxmultiwin = models.IntegerField(default=1, verbose_name='Max Wins per Donor', validators=[positive, nonzero], blank=False, null=False)
-  provided = models.CharField(max_length=64,blank=True, null=True, verbose_name='Provided By')
-  provideremail = models.EmailField(max_length=128, blank=True, null=True, verbose_name='Provider Email')
+  provider = models.CharField(max_length=64, blank=True, help_text='Name of the person who provided the prize to the event')
+  handler = models.ForeignKey(USER_MODEL_NAME, null=True, help_text='User account responsible for prize shipping')
   acceptemailsent = models.BooleanField(default=False, verbose_name='Accept/Deny Email Sent')
   creator = models.CharField(max_length=64, blank=True, null=True, verbose_name='Creator')
   creatoremail = models.EmailField(max_length=128, blank=True, null=True, verbose_name='Creator Email')
   creatorwebsite = models.CharField(max_length=128, blank=True, null=True, verbose_name='Creator Website')
   state = models.CharField(max_length=32,choices=(('PENDING', 'Pending'), ('ACCEPTED','Accepted'), ('DENIED', 'Denied'), ('FLAGGED','Flagged')),default='PENDING')
-
+  requiresshipping = models.BooleanField(default=True, verbose_name='Requires Postal Shipping')
+  reviewnotes = models.TextField(max_length=1024, null=False, blank=True, verbose_name='Review Notes', help_text='Notes for the contributor (for example, why a particular prize was denied)')
+  custom_country_filter = models.BooleanField(default=False, verbose_name='Use Custom Country Filter', help_text='If checked, use a different country filter than that of the event.')
+  allowed_prize_countries = models.ManyToManyField('Country', blank=True, verbose_name="Prize Countries", help_text="List of countries whose residents are allowed to receive prizes (leave blank to allow all countries)")
+  disallowed_prize_regions = models.ManyToManyField('CountryRegion', blank=True, verbose_name='Disallowed Regions', help_text='A blacklist of regions within allowed countries that are not allowed for drawings (e.g. Quebec in Canada)')
+  
   class Meta:
     app_label = 'tracker'
     ordering = [ 'event__date', 'startrun__starttime', 'starttime', 'name' ]
@@ -91,9 +104,24 @@ class Prize(models.Model):
 
   def eligible_donors(self):
     donationSet = Donation.objects.filter(event=self.event,transactionstate='COMPLETED').select_related('donor')
-    # remove all donations from donors who have already won this prize, or have won a prize under the same category for this event
+    # remove all donations from donors who have won a prize under the same category for this event
     if self.category != None:
       donationSet = donationSet.exclude(Q(donor__prizewinner__prize__category=self.category, donor__prizewinner__prize__event=self.event))
+      
+    # Apply the country/regiop filter to the drawing
+    if self.custom_country_filter:
+      countryFilter = self.allowed_prize_countries.all()
+      regionBlacklist = self.disallowed_prize_regions.all()
+    else:
+      countryFilter = self.event.allowed_prize_countries.all()
+      regionBlacklist = self.event.disallowed_prize_regions.all()  
+
+    if countryFilter.exists():
+      donationSet = donationSet.filter(donor__addresscountry__in=countryFilter)
+    if regionBlacklist.exists():
+      for region in regionBlacklist:
+        donationSet = donationSet.exclude(donor__addresscountry=region.country, donor__addressstate__iexact=region.name)
+
     fullDonors = PrizeWinner.objects.filter(prize=self,sumcount=self.maxmultiwin)
     donationSet = donationSet.exclude(donor__in=map(lambda x: x.winner, fullDonors))
     if self.ticketdraw:
@@ -130,6 +158,33 @@ class Prize(models.Model):
     else:
       m = max(donors.items(), key=lambda d: d[1])
       return [{'donor':m[0].id,'amount':m[1],'weight':1.0}]
+
+  def is_donor_allowed_to_receive(self, donor):
+    return self.is_country_region_allowed(donor.addresscountry, donor.addressstate)
+
+  def is_country_region_allowed(self, country, region):
+    return self.is_country_allowed(country) and not self.is_country_region_disallowed(country, region)
+
+  def is_country_allowed(self, country):
+    if self.requiresshipping:
+      if self.custom_country_filter:
+        allowedCountries = self.allowed_prize_countries.all()
+      else:
+        allowedCountries = self.event.allowed_prize_countries.all()
+      if allowedCountries.exists() and country not in allowedCountries:
+        return False
+    return True
+
+  def is_country_region_disallowed(self, country, region):
+    if self.requiresshipping:
+      if self.custom_country_filter:
+        disallowedRegions = self.disallowed_prize_regions.all()
+      else:
+        disallowedRegions = self.event.disallowed_prize_regions.all() 
+      for badRegion in disallowedRegions:
+        if country == badRegion.country and region.lower() == badRegion.name.lower():
+          return True 
+    return False
 
   def games_based_drawing(self):
     return self.startrun and self.endrun
@@ -171,6 +226,18 @@ class Prize(models.Model):
   def get_prize_winners(self):
     return self.prizewinner_set.filter(Q(acceptcount__gte=1) | Q(pendingcount__gte=1))
 
+  def get_accepted_winners(self):
+    return self.prizewinner_set.filter(Q(acceptcount__gte=1))
+  
+  def has_accepted_winners(self):
+    return self.get_accepted_winners().exists()
+  
+  def is_pending_shipping(self):
+    return self.get_accepted_winners().filter(Q(shippingstate='PENDING')).exists()
+  
+  def is_fully_shipped(self):
+    return self.maxed_winners() and not self.is_pending_shipping()
+  
   def get_prize_winner(self):
     if self.maxwinners == 1:
       winners = self.get_prize_winners()
@@ -219,15 +286,33 @@ class PrizeWinner(models.Model):
   sumcount = models.IntegerField(default=1, null=False, blank=False, editable=False, validators=[positive], verbose_name='Sum Counts', help_text='The total number of prize instances associated with this winner')
   prize = models.ForeignKey('Prize', null=False, blank=False, on_delete=models.PROTECT)
   emailsent = models.BooleanField(default=False, verbose_name='Notification Email Sent')
+  # this is an integer because we want to re-send on each different number of accepts
+  acceptemailsentcount = models.IntegerField(default=0, null=False, blank=False, validators=[positive], verbose_name='Accept Count Sent For', help_text='The number of accepts that the previous e-mail was sent for (or 0 if none were sent yet).')
   shippingemailsent = models.BooleanField(default=False, verbose_name='Shipping Email Sent')
+  couriername = models.CharField(max_length=64, verbose_name='Courier Service Name', help_text="e.g. FedEx, DHL, ...", blank=True, null=False)
   trackingnumber = models.CharField(max_length=64, verbose_name='Tracking Number', blank=True, null=False)
   shippingstate = models.CharField(max_length=64, verbose_name='Shipping State', choices=(('PENDING','Pending'),('SHIPPED','Shipped')), default='PENDING')
   shippingcost = models.DecimalField(decimal_places=2,max_digits=20,null=True,blank=True,verbose_name='Shipping Cost',validators=[positive,nonzero])
+  winnernotes = models.TextField(max_length=1024, verbose_name='Winner Notes', null=False, blank=True)
+  shippingnotes = models.TextField(max_length=2048, verbose_name='Shipping Notes', null=False, blank=True)
+  acceptdeadline = models.DateTimeField(verbose_name='Winner Accept Deadline', default=None, null=True, blank=True, help_text='The deadline for this winner to accept their prize (leave blank for no deadline)')
+  auth_code = models.CharField(max_length=64, blank=False, null=False, editable=False, help_text='Used instead of a login for winners to manage prizes.', default=util.make_auth_code)
+  shipping_receipt_url = models.URLField(max_length=1024, blank=True, null=False, verbose_name='Shipping Receipt Image URL', help_text='The URL of an image of the shipping receipt')
 
   class Meta:
     app_label = 'tracker'
     verbose_name = 'Prize Winner'
     unique_together = ( 'prize', 'winner', )
+
+  def accept_deadline_date(self):
+    """Return the actual calendar date associated with the accept deadline"""
+    if self.acceptdeadline:
+        return self.acceptdeadline.astimezone(util.anywhere_on_earth_tz()).date()
+    else:
+        return None
+
+  def make_winner_url(self, domain=settings.DOMAIN):
+    return domain + reverse('prize_winner', args=[self.pk]) + "?auth_code={0}".format(self.auth_code)
 
   def check_multiwin(self, value):
     if value > self.prize.maxmultiwin:
@@ -254,7 +339,16 @@ class PrizeWinner(models.Model):
       prizeSum += winner.acceptcount + winner.pendingcount
     if prizeSum > self.prize.maxwinners:
       raise ValidationError('Number of prize winners is greater than the maximum for this prize.')
-
+    if self.trackingnumber and not self.couriername:
+      raise ValidationError('A tracking number is only useful with a courier name as well!')
+    if self.winner and self.acceptcount > 0 and self.prize.requiresshipping:
+      if not self.prize.is_country_region_allowed(self.winner.addresscountry, self.winner.addressstate):
+        message = 'Unfortunately, for legal or logistical reasons, we cannot ship this prize to that region. Please accept our deepest apologies.'
+        coordinator = self.prize.event.prizecoordinator
+        if coordinator:
+          message += ' If you have any questions, please contact our prize coordinator at {0}'.format(coordinator.email)
+        raise ValidationError(message)
+      
   def validate_unique(self, **kwargs):
     if 'winner' not in kwargs and 'prize' not in kwargs and self.prize.category != None:
       for prizeWon in PrizeWinner.objects.filter(prize__category=self.prize.category, winner=self.winner, prize__event=self.prize.event):

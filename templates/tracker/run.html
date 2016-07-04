@@ -7,7 +7,7 @@
 
 {% block content %}
 	<h2 class="text-center">
-		{{ run.name }}
+		{{ run.name_with_category }}
 	</h2>
 
   {% if run.description %}
@@ -63,6 +63,6 @@
       {% endfor %}
     </table>
 	{% endif %}
-	<p align="center"><a href="{% url 'tracker.views.runindex' event=event.id %}">{% trans "Back to Run Index" %}</a></p>
+	<p align="center"><a href="{% url 'tracker.views.runindex' event=event.short %}">{% trans "Back to Run Index" %}</a></p>
 	{% include "tracker/navfooter.html" %}
 {% endblock %}

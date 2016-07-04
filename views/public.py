@@ -9,6 +9,7 @@ import django.core.paginator as paginator
 from django.http import HttpResponse,HttpResponseRedirect
 from django.views.decorators.cache import cache_page
 from django.core.urlresolvers import reverse
+from django.core import serializers
 
 from decimal import Decimal
 import json
@@ -48,10 +49,10 @@ def index(request,event=None):
   }
 
   if 'json' in request.GET:
-    return HttpResponse(json.dumps({'count':count,'agg':agg},ensure_ascii=False),content_type='application/json;charset=utf-8')
+    return HttpResponse(json.dumps({'count':count,'agg':agg},ensure_ascii=False, cls=serializers.json.DjangoJSONEncoder),content_type='application/json;charset=utf-8')
   elif 'jsonp' in request.GET:
     callback = request.GET['jsonp']
-    return HttpResponse('%s(%s);' % (callback, json.dumps({'count':count,'agg':agg},ensure_ascii=False)), content_type='text/javascript;charset=utf-8')
+    return HttpResponse('%s(%s);' % (callback, json.dumps({'count':count,'agg':agg},ensure_ascii=False, cls=serializers.json.DjangoJSONEncoder)), content_type='text/javascript;charset=utf-8')
     
   return views_common.tracker_response(request, 'tracker/index.html', { 'agg' : agg, 'count' : count, 'event': event })
 
@@ -221,7 +222,7 @@ def donationindex(request,event=None):
     except paginator.PageNotAnInteger:
       pageinfo = pages.page(1)
     except paginator.EmptyPage:
-      pageinfo = pages.page(paginator.num_pages)
+      pageinfo = pages.page(pages.num_pages)
       page = pages.num_pages
     donations = pageinfo.object_list
     
