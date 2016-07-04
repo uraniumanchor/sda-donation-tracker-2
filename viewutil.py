@@ -1,27 +1,27 @@
-from tracker.models import *
-import filters
-from django.db.models import Count,Sum,Max,Avg,Q
-from django.core.urlresolvers import reverse
-from django.http import Http404
-from django.utils.safestring import mark_safe
-from django.contrib.auth import get_user_model
-from django.utils.http import urlsafe_base64_encode
-from django.contrib.auth.tokens import default_token_generator
-from django.utils.encoding import force_bytes
 from decimal import Decimal
 import random
 import httplib2
-from oauth2client.file import Storage
-import gdata.spreadsheet.service
-import settings
-import datetime
-import dateutil.parser
-import operator
 import re
 import pytz
-import post_office.mail
+import operator
+import datetime
+import dateutil.parser
 
-# Adapted from http://djangosnippets.org/snippets/1474/
+from oauth2client.file import Storage
+import gdata.spreadsheet.service
+
+from django.db.models import Count,Sum,Max,Avg,Q
+from django.core.urlresolvers import reverse
+from django.http import Http404
+from django.contrib.auth import get_user_model
+from django.db import transaction
+
+import settings
+
+from tracker.models import *
+import tracker.filters as filters
+import tracker.util as util
+
 
 def get_default_email_host_user():
   return getattr(settings, 'EMAIL_HOST_USER', '')
@@ -32,10 +32,14 @@ def get_default_email_from_user():
 def admin_url(obj):
   return reverse("admin:%s_%s_change" % (obj._meta.app_label, obj._meta.object_name.lower()), args=(obj.pk,), current_app=obj._meta.app_label)
 
+# Adapted from http://djangosnippets.org/snippets/1474/
 def get_request_server_url(request):
-  serverName = request.META['SERVER_NAME']
-  protocol = "https://" if request.is_secure() else "http://"
-  return protocol + serverName
+    if request:
+        serverName = request.META['SERVER_NAME']
+        protocol = "https://" if request.is_secure() else "http://"
+        return protocol + serverName
+    else:
+        raise Exception("Request was null.")
 
 def get_referer_site(request):
   origin = request.META.get('HTTP_ORIGIN', None)
@@ -46,6 +50,8 @@ def get_referer_site(request):
 
 def get_event(event):
   if event:
+    if isinstance(event, Event):
+        return event
     try:
       if re.match(r'^\d+$', event):
         return Event.objects.get(id=event)
@@ -54,24 +60,9 @@ def get_event(event):
     except Event.DoesNotExist:
       raise Http404
   e = Event()
-  e.id = ''
+  e.id = None
   e.name = 'All Events'
   return e
-
-# Parses a 'natural language' list, i.e. seperated by commas, semi-colons, and 'and's
-def natural_list_parse(s):
-  result = []
-  tokens = [s]
-  seperators = [',',';','&','+',' and ',' or ', ' and/or ', ' vs. ']
-  for sep in seperators:
-    newtokens = []
-    for token in tokens:
-      while len(token) > 0:
-        before, found, after = token.partition(sep)
-        newtokens.append(before)
-        token = after
-    tokens = newtokens
-  return list(filter(lambda x: len(x) > 0, map(lambda x: x.strip(), tokens)))
 
 def request_params(request):
   if request.method == 'GET':
@@ -81,38 +72,6 @@ def request_params(request):
   else:
     raise Exception("No request parameters associated with this request method.")
 
-def draw_prize(prize, seed=None):
-  eligible = prize.eligible_donors()
-  if prize.maxed_winners():
-    if prize.maxwinners == 1:
-      return False, { "error" : "Prize: " + prize.name + " already has a winner." }
-    else:
-      return False, { "error" : "Prize: " + prize.name + " already has the maximum number of winners allowed." }
-  if not eligible:
-    return False, { "error" : "Prize: " + prize.name + " has no eligible donors." }
-  else:
-    rand = None
-    try:
-      rand = random.Random(seed)
-    except TypeError: # not sure how this could happen but hey
-      return False, {'error': 'Seed parameter was unhashable'}
-    psum = reduce(lambda a,b: a+b['weight'], eligible, 0.0)
-    result = rand.random() * psum
-    ret = {'sum': psum, 'result': result}
-    for d in eligible:
-      if result < d['weight']:
-        try:
-          donor = Donor.objects.get(pk=d['donor'])
-          winRecord,created = PrizeWinner.objects.get_or_create(prize=prize, winner=donor)
-          if not created:
-            winRecord.pendingcount += 1
-          ret['winner'] = winRecord.winner.id
-          winRecord.save()
-        except Exception as e:
-          return False, { "error" : "Error drawing prize: " + prize.name + ", " + str(e) }
-        return True, ret
-      result -= d['weight']
-    return False, {"error" : "Prize drawing algorithm failed." }
 
 _1ToManyBidsAggregateFilter = Q(bids__donation__transactionstate='COMPLETED')
 _1ToManyDonationAggregateFilter = Q(donation__transactionstate='COMPLETED')
@@ -249,7 +208,7 @@ def parse_row_entry(event, rowEntries):
   if not canonicalGameNameForm or canonicalGameNameForm in ['start', 'end', 'finale', 'total:'] or 'setup' in canonicalGameNameForm:
     return None
 
-  runners = rowEntries[event.schedulerunnersfield]; # natural_list_parse(rowEntries[event.schedulerunnersfield])
+  runners = rowEntries[event.schedulerunnersfield];
   if event.scheduleestimatefield and rowEntries[event.scheduleestimatefield]:
     toks = rowEntries[event.scheduleestimatefield].split(":")
     if len(toks) == 3:
@@ -261,7 +220,7 @@ def parse_row_entry(event, rowEntries):
       if len(toks) == 3:
         postGameSetup = datetime.timedelta(hours=int(toks[0]), minutes=int(toks[1]), seconds=int(toks[2]))
   if event.schedulecommentatorsfield:
-    commentators = rowEntries[event.schedulecommentatorsfield] # natural_list_parse(rowEntries[event.schedulecommentatorsfield])
+    commentators = rowEntries[event.schedulecommentatorsfield]
   if event.schedulecommentsfield:
     comments = rowEntries[event.schedulecommentsfield]
   estimatedTime = startTime + estimatedTimeDelta
@@ -416,19 +375,24 @@ def merge_donors(rootDonor, donors):
   rootDonor.save()
   return rootDonor
 
-def send_password_reset_mail(request, user, template, sender=None, token_generator=default_token_generator):
-  if not sender:
-    sender = get_default_email_from_user()
-  uid = urlsafe_base64_encode(force_bytes(user.pk))
-  token = token_generator.make_token(user)
-  domain = get_request_server_url(request)
-  reset_url = get_request_server_url(request) + reverse('password_reset_confirm') + '?uidb64={0}&token={1}'.format(uid,token) 
-  formatContext = {
-    'uid': uid,
-    'token': token,
-    'user': user,
-    'domain': domain,
-    'reset_url': mark_safe( reset_url ),
-  }
-  post_office.mail.send(recipients=[user.email], sender=sender, template=template, context=formatContext)
-
+def autocreate_donor_user(donor):
+    AuthUser = get_user_model()
+    
+    if not donor.user:
+        with transaction.atomic():
+            linkUser = None
+            try:
+                linkUser = AuthUser.objects.get(email=donor.email)
+            except AuthUser.MultipleObjectsReturned:
+                message = 'Multiple users found for email {0}, when trying to mail donor {1} for prizes'.format(donor.email, donor.id)
+                tracker_log('prize', message, event=event)
+                raise Exception(message)
+            except AuthUser.DoesNotExist:
+                targetUsername = donor.email
+                if donor.alias and not AuthUser.objects.filter(username=donor.alias):
+                    targetUsername = donor.alias
+                linkUser = AuthUser.objects.create(username=targetUsername, email=donor.email, first_name=donor.firstname, last_name=donor.lastname, is_active=False)
+            donor.user = linkUser
+            donor.save()
+        
+    return donor.user

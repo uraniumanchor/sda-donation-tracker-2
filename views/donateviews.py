@@ -1,15 +1,10 @@
-from . import common as views_common
-import tracker.models as models
-import tracker.forms as forms
-import tracker.viewutil as viewutil
-import tracker.filters as filters
-import tracker.paypalutil as paypalutil
-
-from paypal.standard.forms import PayPalPaymentsForm
-from paypal.standard.ipn.models import PayPalIPN
-from paypal.standard.ipn.forms import PayPalIPNForm
-
-import post_office.mail
+from decimal import Decimal
+import pytz
+import json
+import urllib2
+import datetime
+import random
+import traceback
 
 from django.db import transaction
 from django.http import HttpResponse,Http404
@@ -18,12 +13,18 @@ from django.views.decorators.cache import never_cache
 from django.core import serializers
 from django.core.urlresolvers import reverse
 
-from decimal import Decimal
-import pytz
-import json
-import urllib2
-import datetime
-import random
+from paypal.standard.forms import PayPalPaymentsForm
+from paypal.standard.ipn.models import PayPalIPN
+from paypal.standard.ipn.forms import PayPalIPNForm
+
+import post_office.mail
+
+from . import common as views_common
+import tracker.models as models
+import tracker.forms as forms
+import tracker.viewutil as viewutil
+import tracker.filters as filters
+import tracker.paypalutil as paypalutil
 
 __all__ = [
   'paypal_cancel',
@@ -48,7 +49,7 @@ def donate(request, event):
   bidsFormPrefix = "bidsform"
   prizeFormPrefix = "prizeForm"
   if request.method == 'POST':
-    commentform = forms.DonationEntryForm(data=request.POST)
+    commentform = forms.DonationEntryForm(event=event,data=request.POST)
     if commentform.is_valid():
       prizesform = forms.PrizeTicketFormSet(amount=commentform.cleaned_data['amount'], data=request.POST, prefix=prizeFormPrefix)
       bidsform = forms.DonationBidFormSet(amount=commentform.cleaned_data['amount'], data=request.POST, prefix=bidsFormPrefix)
@@ -79,7 +80,7 @@ def donate(request, event):
           for prizeform in prizesform:
             if 'prize' in prizeform.cleaned_data and prizeform.cleaned_data['prize']:
               prize = prizeform.cleaned_data['prize']
-              donation.tickets.add(PrizeTicket(prize=prize, amount=Decimal(prizeform.cleaned_data['amount'])))
+              donation.tickets.add(models.PrizeTicket(prize=prize, amount=Decimal(prizeform.cleaned_data['amount'])))
           donation.full_clean()
           donation.save()
 
@@ -95,6 +96,7 @@ def donate(request, event):
           "cancel_return": serverURL + reverse('tracker.views.paypal_cancel'),
           "custom": str(donation.id) + ":" + donation.domainId,
           "currency_code": donation.event.paypalcurrency,
+          "no_shipping": 0,
         }
         # Create the form instance
         form = PayPalPaymentsForm(button_type="donate", sandbox=donation.event.usepaypalsandbox, initial=paypal_dict)
@@ -104,7 +106,7 @@ def donate(request, event):
       bidsform = forms.DonationBidFormSet(amount=Decimal('0.00'), data=request.POST, prefix=bidsFormPrefix)
       prizesform = forms.PrizeTicketFormSet(amount=Decimal('0.00'), data=request.POST, prefix=prizeFormPrefix)
   else:
-    commentform = forms.DonationEntryForm()
+    commentform = forms.DonationEntryForm(event=event)
     bidsform = forms.DonationBidFormSet(amount=Decimal('0.00'), prefix=bidsFormPrefix)
     prizesform = forms.PrizeTicketFormSet(amount=Decimal('0.00'), prefix=prizeFormPrefix)
 
@@ -147,7 +149,7 @@ def donate(request, event):
   ticketPrizes = allPrizes.filter(ticketdraw=True)
 
   def prize_info(prize):
-    result = {'id': prize.id, 'name': prize.name, 'description': prize.description, 'minimumbid': prize.minimumbid, 'maximumbid': prize.maximumbid}
+    result = {'id': prize.id, 'name': prize.name, 'description': prize.description, 'minimumbid': prize.minimumbid, 'maximumbid': prize.maximumbid, 'sumdonations': prize.sumdonations}
     return result
 
   dumpArray = [prize_info(o) for o in ticketPrizes.all()]
@@ -204,7 +206,7 @@ def ipn(request):
         'donor__visibility': donation.donor.visibility,
         'donor__visiblename': donation.donor.visible_name(),
       }
-      postbackJSon = json.dumps(postbackData)
+      postbackJSon = json.dumps(postbackData, ensure_ascii=False, cls=serializers.json.DjangoJSONEncoder)
       postbacks = models.PostbackURL.objects.filter(event=donation.event)
       for postback in postbacks:
         opener = urllib2.build_opener()
@@ -216,9 +218,10 @@ def ipn(request):
       paypalutil.log_ipn(ipnObj, 'Cancelled/reversed payment')
 
   except Exception as inst:
+    # just to make sure we have a record of it somewhere
+    print("ERROR IN IPN RESPONSE, FIX IT")
     if ipnObj:
       paypalutil.log_ipn(ipnObj, "{0} \n {1}. POST data : {2}".format(inst, traceback.format_exc(inst), request.POST))
     else:
       viewutil.tracker_log('paypal', 'IPN creation failed: {0} \n {1}. POST data : {2}'.format(inst, traceback.format_exc(inst), request.POST))
-
   return HttpResponse("OKAY")
